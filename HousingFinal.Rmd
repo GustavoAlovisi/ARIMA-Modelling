@@ -1,0 +1,608 @@
+---
+title: "Trabalho de Econometria"
+author: "Gustavo Alovisi"
+date: "28 de novembro de 2017"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+
+
+
+#Modelagem ARIMA
+
+
+##Introdu??o: 
+
+O presente trabalho busca realizar uma modelagem ARIMA dado a metodologia de Box and Jenkins. Primeiramente, selecionamos uma s?rie temporal n?o-estacion?ria (n?mero de vendas de casas nos EUA - mensalmente: 1982-2004). Ap?s isto, s?o realizados testes de estacionariedade para a s?rie temporal, assim como transforma??es (diferen?as) para tornar a s?rie escolhida estacion?ria. A partir da s?rie estacion?ria, realiza-se ent?o a sele??o do modelo de maior ordem, os testes de raiz unit?ria da s?rie, a compara??o dos Crit?rios de Informa??o e a an?lise de res?duos dos modelos candidatos a melhor escolha. Ap?s a sele??o dos modelos finais, analisamos a rela??o entre o modelo gerado pela fun??o auto.arima() e o modelo final que escolhemos, bem como o teste arch para heterocedasticidade condicional e a adi??o de um regressor (US Treasure Bond Yields, 10 years) no modelo SARIMA. Tamb?m ? feita a previs?o 15 meses a frente dado o modelo SARIMAX ajustado e uma compara??o entre erros de previs?o do modelo SARIMAX e os erros de previs?o do modelo de Suaviza??o Exponencial gerado pela fun??o ets(). Por fim, estimamos a estat?stica U de Theil para a qualidade de previs?o do modelo. 
+
+As s?ries foram coletadas pelo site do Banco Central de St. Louis (FRED)?. As libraries utilizadas est?o no final do trabalho. 
+
+
+?
+*HSN1FNSA
+https://fred.stlouisfed.org/series/HSN1FNSA?utm_source=series_page&utm_medium=related_content&utm_term=other_formats&utm_campaign=other_format
+
+**Long-Term Government Bond Yields: 10-year
+https://fred.stlouisfed.org/series/IRLTLT01USM156N
+
+
+
+###Defini??o e importa??o da s?rie temporal###
+
+Como in?cio do trabalho, vamos primeiro importar para uma estrutura de dados xts nossa s?rie temporal n?o estacion?ria do banco de dados do FRED, atrav?s da fun??o getSymbols(). A s?rie representa no eixo y o n?mero de casas vendidas nos EUA (em milhares), possui periodicidade mensal e compreende o per?odo de 1982-10-01 a 2004-11-01. 
+Importaremos tamb?m 15 observa??es a frente, a fim de servir como o nosso banco de testes para a futura previs?o. 
+
+
+
+```{r}
+library(xts)
+library(quantmod)
+
+housing=getSymbols('HSN1FNSA', src="FRED", auto.assign = F)
+
+housingtest <- housing["2004-12-01/2006-02-01"]
+housing <- housing["1982-10-01/2004-11-01"] # utilizaremos 15 obseva??es a menos no final de nossa amostra 
+ # carregaremos estas 15 observa??es para fora da amostra, a fim de testar a previs?o com o modelo sarima(p=1, d=1, q=1, P=1,D=1,Q=1, S=12) novamente estimado
+
+plot.zoo(housing, main = "N?mero de casas vendidas", xlab= "Tempo")
+
+```
+
+
+
+Utilizaremos a library ggplot para analisarmos a sazonalidade de nossa s?rie: 
+
+```{r}
+library(ggplot2)
+library(forecast)
+housingts <- ts(housing[,1], start = c(1982,10), frequency = 12)
+#tail(housingts)
+ggseasonplot(housingts, polar = F)
+```
+
+
+
+```{r}
+ggseasonplot(housingts, polar = T)
+```
+
+
+A partir da representa??o em linhas, do plot de linhas sazonal e do plot sazonal de coordenadas polares, podemos claramente ver uma sazonalidade na s?rie temporal, com o m?s de Junho atingindo o pico de vendas de casas, em contraste com Fevereiro e Mar?o que aprensetam o menor numero de vendas. 
+\textcolor{red}{
+O gr?fico em coordenadas polares plota o eixo X (tempo) como um c?rculo de ?ngulo phi e raio 'r' para cada periodo sazonal presente na s?rie temporal. Como o valor y da s?rie cresce em quase todo o per?odo, o raio tamb?m cresce. A convers?o para coordenadas polares ? dada por phi=arctg(y,x) e r = raiz(x?+y?). } 
+
+Para \textcolor{red}{estudarmos} a hip?tese de sazonalidade e n?o estacionariedade, plotaremos a Fun??o de Autocorrela??o e Autocorrela??o Parcial da s?rie de vendas. 
+
+```{r}
+library(astsa)
+par(mfrow=c(2,1), mex = 0.8, cex = 0.8)
+acf(housing, lag.max = 100)
+pacf(housing, lag.max = 100)
+
+```
+
+Notamos que a fun??o de autocorrela??o (ACF) possui um deca?mento lento e n?o exponencial, com per?odos de maior e menor autocorrela??o da s?rie. 
+
+Como primeiro passo para torn?-la estacion?ria, tiraremos a primeira diferen?a n?o sazonal da s?rie.
+
+Ap?s tirarmos a primeira diferen?a da s?rie, notamos que ela exibe um comportamento parecido a de um White-Noise (m?dia 0, variancia sigma?), por?m com uma sazonalidade de tempos em tempos representada pelo constante pico->queda nos valores diferenciados. 
+
+```{r}
+dhousing <- diff.xts(housing, na.pad = F)
+plot.zoo(dhousing, main = "Primeira diff. n?o sazonal \n n?mero de casas vendidas", xlab= "Tempo")
+```
+
+
+Em seguidas exibiremos a ACF e PACF da s?rie diferenciada.
+A partir das fun??es ACF e PACF da s?rie diferenciada(1), notamos que de fato ainda existe uma sazonalidade de 12 em 12 meses, apesar da parte n?o-sazonal parecer estacion?ria. Por isso, tiraremos a diferen?a sazonal de lag = 12. 
+
+```{r}
+par(mfrow=c(2,1), mex = 0.8, cex = 0.8)
+acf(dhousing, lag.max = 100)
+pacf(dhousing, lag.max = 100)
+```
+
+
+
+```{r}
+sdhousing <- diff.xts(dhousing, lag= 12, na.pad = F)
+plot.zoo(sdhousing, main = "Diferen?a sazonal e n?o sazonal \n n?mero de casas vendidas", xlab= "Tempo")
+```
+
+###Testes de Ra?z Unit?ria###
+
+Ap?s a remo??o da sazonalidade, podemos ver que a s?rie exibe um comportamento parecido com o de um White Noise, com m?dia 0 e var sigma?, sem sazonalidade aparente.  Vamos ent?o testar a hip?tese de Raiz Unit?ria da s?rie diferenciada sazonalmente e n?o sazonalmente - sdhousing - para nos certificarmos que ela pode ser dita estacion?ria. 
+
+
+Os testes utilizados ser?o o ADF (Augmented DFuller) e PP (Philips-Pherron). Vale a pena notar que o teste ADF pode ser realizado de tr?s maneiras (i) sem drift e com tend?ncia linear em t (ii) com drift e sem tend?ncia linear em t (iii) com drift e tend?ncia determin?stica em t. 
+\textcolor{red}{
+Procurei testar as tr?s vers?es do teste DF conforme a p?gina 86 da apostila do Guilherme. "Teste para ra?z unit?ria", "Teste para ra?z unit?ria com drift" e "Teste de raiz unit?ria com drift e tend?ncia temporal deterministica". Para isso, procurei as fun??es que testavam cada caso e inclui no trabalho. 
+}
+
+
+O primeiro CADFtest testa a hip?tese [H0: possui ra?z unit?ria] sem drift e sem tend?ncia, o segundo com drift e sem tend?ncia e o terceiro com drift e com tend?ncia. 
+```{r}
+library(tseries)
+library(CADFtest)
+
+
+
+##tseries::adf.test(sdhousing, alternative = c("s"))   # Com drift e tend?ncia  H0: tem raz unit?ria
+CADFtest(sdhousing, type=c("none"), max.lag.y=5) # Sem drift e sem tend?ncia H0: tem raiz unit?ria
+CADFtest(sdhousing, type = c("drift"), max.lag.y=5) # Com drift e sem tend?ncia : H0: tem raiz unitaria
+CADFtest(sdhousing, type = c("trend"), max.lag.y = 5) #Com drift e com tend?ncia: H0: tem ra?z unit?ria
+pp.test(sdhousing) #philips-perron
+```
+
+A partir dos testes de ra?z unit?ria ADF, rejeitamos H0 com 5% de chance de erro para os casos: com drift e tend?ncia e com drift e sem tend?ncia e sem drift e sem tend?ncia, indicando que n?o h? ra?z unit?ria e a s?rie sdhousing ? de fato estacion?ia. O PP-test tamb?m rejeita a hip?tese H0 5% de ra?z unit?ria com p-valor = 0.01 para todos os tipos de teste.  
+
+
+
+
+Agora que a s?rie est? estacion?ria, prosseguiremos a an?lise da ACF e PACF para a sele??o e ajustamento de um modelo:
+
+```{r}
+par(mfrow=c(2,1), mex = 0.8, cex = 0.8)
+acf(sdhousing, lag.max = 100)
+pacf(sdhousing, lag.max = 100)
+
+```
+
+###Sele??o do Modelo###
+
+A partir da an?lise das fun??es ACF e PACF, definimos o modelo de mais alta ordem: 
+\textcolor{red}{
+p=3 (PACF cai e volta a subir a partir de 4)}
+
+d=1 (diferenciado 1 vez)  
+
+q=1 (ACF n?o sazonal mostra 1 valor significativo)  
+
+P=3 (PACF tails-off a partir do lag sazonal 3)  
+
+D=1 (diferenciado sazonalmente 1 vez)  
+
+Q=1 (ACF sazonal mostra 1 valor significativo)  
+
+S=12 (lag sazonal = 12)  
+
+\textcolor{red}{
+logo,
+**sarima(housing, p=3,d=1,q=1,P=3,D=1,Q=1,S=12)**} 
+
+
+
+
+Vamos ent?o ajustar o modelo de mais alta ordem utilizando a fun??o sarima() da library astsa do professor Stoffer. 
+
+
+```{r}
+sarima(housing, p=3,d=1,q=1,P=3,D=1,Q=1,S=12, details = F)
+```
+
+\textcolor{red}{
+O modelo inicial apresenta Crit?rios de Informa??o AIC  4.047536, AICc 4.057698 e BIC 3.15531. Apesar do gr?fico da fun??o de autocorrela??o dos res?duos parecer de um white-noise, o plot do teste de ljung-box indica incapacidade de rejeitar a hip?tese nula de aus?ncia de correla??o dos res?duos at? a ordem X apenas a partir do lag 12. Para melhorar nosso ajuste em rela??o aos Crit?rios de Informa??o e Ljung-box, vamos retirar um termo AR e continuar a an?lise.}
+
+
+
+```{r}
+sarima(housing, 1,1,1,3,1,1,12, details = F)
+
+```
+\textcolor{red}{ 
+Como podemos ver na an?lise de res?duos, a fun??o de autocorrela??o dos res?duos parece com a de um White noise e os p-valores para a estat?stica de Ljung-Box para os res?duos at? a ordem determinada s?o razo?veis a partir do lag 12. Vamos continuar a procura de um melhor modelo que minimize os crit?rios de informa??o e exiba valores mais adequados para o teste de ljung box dos res?duos, principalmente dos lags iniciais. } 
+
+
+Vamos agora retirar um componente SAR: 
+
+
+
+
+O novo modelo ficou ent?o: 
+
+```{r}
+sarima(housing, p=1,d=1,q=1,P=2,D=1,Q=1,S=12,details = F)
+
+```
+
+Notamos que esta modifica??o minimizou todos os 3 os crit?rios de informa??o AIC, AICc e BIC. O teste de Ljung-box para os res?duos tamb?m melhorou, n?o podendendo rejeitar a hip?tese de aus?ncia de autocorrela??o dos res?duos at? a ordem H a partir do lag 10.
+
+Por fim, ao realizarmos a an?lise da ttable para os termos SARMA, notamos que ambos SAR1 e SAR2 ainda continuam exibindo p-valores altos (0.607 e 0.265). 
+
+
+
+
+Para continuar a adequa??o do modelo, removeremos mais um dos termos SAR e analisaremos novamente o resultado:
+
+
+```{r}
+sarima(housing, p=1,d=1,q=1,P=1,D=1,Q=1,S=12,details = F)
+```
+
+
+
+
+
+
+```{r}
+x<-arima(housing, order =  c(1,1,1), seasonal = list(order=c(1,1,1), period =12))
+Box.test(resid(x), lag = 24, type=c("Ljung-Box"))
+```
+
+Novamente notamos uma melhora na an?lise dos res?duos, com p-valores para a estat?stica de Ljung-box satisfat?rios a partir do lag 5 e uma ACF dos res?duos muito semelhante a uma ACF de um White Noise. 
+
+Todos os 3 crit?rios de informa??o tamb?m foram reduzidos. 
+
+
+
+
+Vamos remover o ?ltimo termo SAR e refazer a an?lise:
+
+
+```{r}
+sarima(housing, p=1,d=1,q=1,P=0,D=1,Q=1,S=12,details = F)
+
+```
+
+```{r}
+x<-arima(housing, order =  c(1,1,1), seasonal = list(order=c(0,1,1), period =12))
+Box.test(resid(x), lag = 24, type=c("Ljung-Box"))
+Box.test(resid(x), lag = 1, type=c("Ljung-Box"))
+Box.test(resid(x), lag = 100, type=c("Ljung-Box"))
+```
+
+Ao reajustar o modelo sem o termo SAR, podemos ver que os todos os crit?rios de informa??o apresentam um descr?scimo:  
+
+*Crit?rios SARIMA(p=1,d=1,q=1,P=1,D=1,Q=1,S=12)*
+
+$AIC
+[1] 4.026867
+
+$AICc
+[1] 4.035253
+
+$BIC
+[1] 3.080754
+
+
+*Crit?rios SARIMA(p=1,d=1,q=1,P=0,D=1,Q=1,S=12)*
+
+
+$AIC
+[1] 4.026198    
+
+$AICc
+[1] 4.034293
+
+$BIC
+[1] 3.066613
+
+\textcolor{red}{ 
+Al?m disso, o teste de ljung-box continua tendo evid?ncias insuficientes para rejeitar a hip?tese de n?o haver autocorrela??o para os res?duos at? a ordem = 24 (p=0.88). A ordem de 24 foi escolhida como rule of thumb do lag a ser testado corresponder ao dobro do per?odo de tempo sazonal da s?rie(12). Se aumentarmos ou diminuirmos a ordem, o p-valor continua exibindo valores maiores que 0.05 at? o determinado lag. O p-valor para lag = 1 ? 0.9322. O p-valor para lag = 100 ? 0.9378. Este parece ser o melhor modelo at? ent?o.} 
+
+
+
+
+Para continuar a an?lise, removeremos outros termos para checar se existe diminui??o dos crit?rios de informa??o.
+
+
+Primeiro, vamos remover o primeiro termo AR:
+
+```{r}
+sarima(housing, p=0,d=1,q=1,P=0,D=1,Q=1,S=12,details = F)
+```
+
+$AIC
+[1] 4.080953
+
+$AICc
+[1] 4.088816
+
+$BIC
+[1] 3.107896
+
+O ajustamento teve consideralvemente maiores crit?rios de informa??o e piores p-valores para a estat?stica de ljung-box, sendo assim inferior. 
+
+
+
+Vamos ent?o adicionar de volta o termo AR e remover o termo q=MA1:
+
+```{r}
+sarima(housing, p=1,d=1,q=0,P=0,D=1,Q=1, S=12,details = F)
+```
+
+
+$AIC
+[1] 4.101287
+
+$AICc
+[1] 4.10915
+
+$BIC
+[1] 3.128231
+
+
+O novo modelo tamb?m se mostrou inferior, com maiores crit?rios de informa??o e piores valores para a estat?stica de Ljung-box para os res?duos. 
+
+
+
+
+Por ?ltimo, realizaremos a ?ltima transforma??o e removeremos o termo Q=SMA(1):
+
+```{r}
+sarima(housing, p=1,d=1,q=1,P=0,D=1,Q=0, S=12,details = F)
+
+```
+
+
+O modelo sem SMA1 tamb?m ? inferior, com crit?rios de informa??o muito mais elevados.  
+
+
+
+Por ?ltimo, vamos remover ambos os termos AR1 e MA1:
+
+```{r}
+sarima(housing, p=0,d=1,q=0,P=0,D=1,Q=0, S=12,details = F)
+```
+
+
+Os crit?rios de informa??o aumentaram consideravelmente ap?s a remo??o de ambos os termos. 
+
+
+
+Logo, o modelo final para a previs?o de *housing* ficou **sarima(housing, p=1, d=1, q=1, P=0, D=1, Q=1, S=12)**.
+
+O modelo final possui crit?rios de informa??o AIC, AICc e BIC menores que todos os outros modelos, assim como maior p-valor para o teste de Ljung-Box. Al?m disso, a an?lise de res?duos mostra um QQ Plot bem comportado, um plot de res?duos semelhante a de um White-noise estacion?rio e uma ACF dos res?duos mostrando aus?ncia de autocorrela??o. 
+
+
+
+
+
+###auto.arima()###
+
+Agora que j? possu?mos o melhor modelo ajustado, podemos realizar outras an?lises antes da previs?o. 
+
+
+
+Primeiramente, iremos comparar o melhor modelo identificado com o melhor modelo identificado pela fun??o auto.arima() da library forecast. 
+
+\textcolor{red}{
+A fun??o auto.arima retornou o modelo sarima(housing, p=3, d=1, q= 1, P=2, D=0,Q=0). Antes a fun??o n?o encontrava um modelo sazonal (arima 4,1,2) pois ela requer que a sazonalidade ja esteja implicita na s?rie temporal quando define a s?rie (pensei que ele encontrava automaticamente). A? setei a frequ?ncia para 12 (1 ano, mensal) e ele encontrou o modelo sazonal ao inv?s do modelo n?o sazonal. }
+
+\textcolor{red}{
+A an?lise de res?duos da fun??o sarima nos mostrou p-valores do teste de ljung-box razo?veis com p>0.05 para os testes at? o lag=35 e incapacidade de rejeitar a hip?tese de aus?ncia de autocorrela??o. Por?m, houve um aumento significativo nos Crit?rios de Informa??o do modelo em rela??o a nosso melhor modelo ajustado.
+Portanto, podemos afirmar que o modelo sarima(housing, p=1,d=1,q=1,P=0,D=1,Q=1,S=12) possui melhor ajustamento do que o modelo gerado pela fun??o auto.arima().}
+
+```{r}
+housing2 = ts(housing, frequency = 12)
+auto.arima(housing2, seasonal = T, trace = F, test = c("adf"))
+sarima(housing, 3,1,1,2,0,0,12, details = F)
+```
+
+
+
+
+
+
+###ARCH Test###
+
+\textcolor{red}{
+Iremos testar a necessidade de modelar a vari?ncia condicional da s?rie pelo modelo GARCH. Primeiramente, realizaremos o plot dos res?duos ao quadrado da s?rie e de sua fun??o de autocorrela??o e autocorrela??o parcial. }
+\textcolor{red}{
+Podemos ver a partir das fun??es de autocorrela??o que o modelo GARCH teria p=0 e q=0, uma vez que nenhum valor do ACF/PACF ? significativo. Portanto, h? ind?cios que a modelagem da heterocedasticidade condicional pode ser descartada. Para nos certificarmos, realizaremos o Teste de Engle para a vari?ncia condicional.}
+
+```{r}
+x<-arima(housing, order =  c(1,1,1), seasonal = list(order=c(0,1,1), period =12))
+plot.zoo(residuals(x)^2, main = 'Res?duos ao quadrado')
+```
+
+```{r}
+par(mfrow=c(2,1), mex = 0.8, cex = 0.8)
+acf(residuals(x)^2, lag.max = 100)
+pacf(residuals(x)^2, lag.max = 100)
+```
+
+
+\textcolor{red}{
+O teste de Engle testa a hip?tese nula da sequ?ncia dos quadrados dos res?duos do modelo ser um white-noise. Para a realiza??o do teste foi aproveitado uma fun??o de arch test de uma library que n?o est? mais dispon?vel para a ?ltima vers?o do R (Financial Timeseries - FinTs), uma vez que o teste que foi utilizado antes possu?a valores n?o desejados para os lags. }
+
+\textcolor{red}{
+O teste de engle para a vari?ncia condicional retorna um p-value de 0.818 para o lag = 1, levando-nos a incapacidade de rejeitar a hip?tese nula dos res?duos ao quadrado serem um white-noise. O resultado do teste est? de acordo com o que observamos nas fun??es de autocorrela??o e autocorrela??o parcial dos res?duos ao quadrado.} 
+
+```{r}
+library(aTSA)
+
+
+ArchTest <- function (x, lags=1, demean = FALSE) 
+{
+# Capture name of x for documentation in the output  
+  xName <- deparse(substitute(x))
+# 
+  x <- residuals(x)
+  if(demean) x <- scale(x, center = TRUE, scale = FALSE)
+#  
+  lags <- lags + 1
+  mat <- embed(x^2, lags)
+  arch.lm <- summary(lm(mat[, 1] ~ mat[, -1]))
+  STATISTIC <- arch.lm$r.squared * length(resid(arch.lm))
+  names(STATISTIC) <- "Chi-squared"
+  PARAMETER <- lags - 1
+  names(PARAMETER) <- "df"
+  PVAL <- 1 - pchisq(STATISTIC, df = PARAMETER)
+  METHOD <- "ARCH LM-test;  Null hypothesis:  no ARCH effects"
+  result <- list(statistic = STATISTIC, parameter = PARAMETER, 
+                 p.value = PVAL, method = METHOD, data.name =
+                 xName)
+  class(result) <- "htest"
+  return(result)
+}
+
+ArchTest(x)
+
+```
+
+
+
+
+###Adi??o de um Regressor###
+
+Por fim, vamos adicionar um regressor no modelo SARIMA ajustado, afim de testar a causalidade entre casas vendidas nos EUA e a Taxa de juros de longo prazo (10 anos) de t?tulos de d?vida do Governo dos Estados Unidos. Esta s?rie foi escolhida pois hist?ricamente a taxa de hipotecagem ? definiada em rela??o a Taxa de Juros de longo prazo dos t?tulos do governo. 
+
+A especifica??o do modelo fica ent?o SARIMAX(housing, p=1,d=1,q=1, P=0,D=1,Q=1,S=12, xreg= irl2). Ou seja, a venda de casas agora passa a ser explicada pela rela??o entre beta*A taxa de juros de longo prazo dos t?tulos mais um componente estoc?stico de erros da forma SARIMA. 
+
+Abaixo, podemos ver uma compara??o de ambas as s?ries temporais:
+
+
+```{r}
+
+irl2<- getSymbols("IRLTLT01USM156N", src = 'FRED', auto.assign= F)
+irl2 <- irl2["1982-10-01/2004-11-01"]
+
+par(mfrow = c(2,1))
+plot.xts(housing, main = "N?mero de casas vendidas")
+plot.xts(irl2, main = "US govt. bond yields (%)")
+#cor(housing, irl2)
+
+
+```
+ 
+E tamb?m a dispers?o entre as s?ries:
+
+```{r}
+plot.default(x= irl2, y= housing, main = 
+"Dispers?o", xlab = "Us govt. bond yields (%)", ylab= "N?mero de casas vendidas")
+```
+ 
+Estimando o modelo: 
+ 
+```{r}
+sarima(housing, 1,1,1,0,1,1,12, xreg= irl2, details = F)
+```
+\textcolor{red}{
+Ap?s incluirmos o regressor na an?lise, podemos concluir que a adi??o do regressor minizou todos os tr?s crit?rios de informa??o.}
+
+
+
+
+
+Para continuar a an?lise, vamos realizar o teste de Ljung-Box para os res?duos do novo modelo SARIMAX. 
+
+```{r}
+final<-arima(housing, order =  c(1,1,1), seasonal = list(order=c(0,1,1), period =12), xreg = irl2)
+Box.test(resid(final), lag = 24, type = c("Lj"))
+```
+
+\textcolor{red}{ 
+Com p-valor de 0.84 para o teste de ljung-box, continuamos n?o tendo evid?ncias para rejeitar a hip?tese nula de aus?ncia de autocorrela??o dos res?duos at? a ordem 24. Houve uma diminui??o em todos os Crit?rios de Informa??o e podemos afirmar que o modelo com regressor aumentou a qualidade de nosso ajuste.} 
+
+
+###Previs?o###
+
+
+Realizaremos a previs?o para 15 meses a frente. Para isso, carregaremos os 15 meses seguintes de nosso regressor (taxa de retornos do tesouro americano), e plotaremos a previs?o com 80% e 95% de confian?a.
+
+```{r}
+
+irlahead<- getSymbols("IRLTLT01USM156N", src = 'FRED', auto.assign= F)
+irlahead <- irlahead['2004-12-01/2006-02-01']
+
+
+fitted<-arima(housing, order =  c(1,1,1), seasonal = list(order=c(0,1,1), period =12), xreg = irl2)
+
+predito <- forecast::forecast(fitted,xreg=irlahead, level = c(80, 95))
+
+autoplot(predito, showgap = F)
+
+```
+
+
+
+Veremos agora a precis?o da previs?o comparando o que foi predito para 2004-12-01/2006-02-01 com os valores observados no per?odo. 
+
+```{r}
+accuracy(predito, housingtest)
+```
+\textcolor{red}{
+A partir dos erros de previs?o, podemos ver que a Ra?z do Erro Quadrado M?dio (RMSE) ? aproximadamente 8.1752, com a previs?o plotada graficamente.}
+
+
+
+
+Por fim, compararemos de uma forma visual os valores do test set (os valores reais de HSN1FNSA de 2004-12-01 a 2005-09-01) e os valores m?dios previstos com o nosso modelo:
+
+
+```{r}
+preditomedio<-predito$mean
+compar<-data.frame(housingtest, preditomedio)
+compar
+```
+
+Atrav?s da an?lise entre o valor observado e o valor predito, podemos ver que nosso modelo prev? com consist?ncia diversas observa??es. 
+
+
+
+###U de Theil###
+
+Por fim, vamos calcular para nosso modelo SARIMAX o indicator de U de Theil para as 15 observa??es fora da amostra. Como primeiro argumento, utilizaremos os valores observados das 15 observa??es. Como segundo argumento, utilizaremos o valor predito pelo modelo, para estas 15 observa??es. 
+
+
+```{r}
+library(DescTools)
+
+TheilU(as.ts(housingtest, start = 267, end= 281), preditomedio, type = 2, na.rm = F)
+
+
+```
+
+
+A fun??o U de Theil nos retornou o valor de 0.0787,  o que indica que utilizar nosso modelo ajustado ? significativamente melhor que apenas assumir que o valor de hoje ser? o valor passado. 
+
+
+
+
+
+
+###ARIMA e Suaviza??o Exponencial###
+
+Iremos, por fim, comparar a previs?o do modelo SARIMAX com outro famoso modelo de previs?o, o modelo Suaviza??o Exponencial (ETS). 
+
+```{r}
+
+modelo <- ets(housing2, model = "ZZZ")
+prevets <- forecast::forecast.ets(modelo, h=15)
+autoplot(prevets)
+
+```
+\textcolor{red}{
+O modelo automaticamente detecta os par?metros Error, Trend e Seasonality como Multiplicativo, Aditivo e Multiplicativo. }
+
+```{r}
+accuracy(prevets, housingtest)
+```
+
+\textcolor{red}{
+O modelo de suaviza??o exponencial possui RMSE de 6.95 e apresenta uma previs?o aparentemente melhor do que o modelo selecionado a partir de Box and Jenkins (RMSE = 8.1752) e consequentemente do modelo selecionado pela fun??o auto.arima (que possu? todos crit?rios de informa??o maiores que o modelo por box and jenkins). A previs?o agora ficou muito melhor pois ocorreu o mesmo erro da fun??o auto.arima em que a sazonalidade n?o estava explicitada na s?rie. Depois que explicitei uma sazonalidade de 12, a fun??o selecionou um modelo adequado, ao inv?s de uma previs?o constante. }
+
+
+##Conclus?o## 
+
+A partir do apresentado no trabalho, podemos afirmar que a o processo de Box and Jenkings para modelar s?ries temporais atrav?s do modelo ARIMA pode ser aplicado razoavelmente bem para a s?rie de Venda mensal de casas nos Estados Unidos. O modelo final apresenta um termo AR, um termo MA, um termo MA sazonal, uma diferen?a n?o sazonal e uma diferen?a sazonal de lag 12, al?m do regressor US Treasure Bond Yields. Os testes de raiz unit?ria rejeitam a presen?a da raiz unit?ria e atestam que a s?rie final ? causal. A modelagem da heterocedasticidade condicional foi descartada com base no teste LM. Ademais, o modelo final conta com Crit?rios de Informa??o de menor magnitude que os Crit?rios da fun??o auto.arima. Nosso modelo apresenta uma melhor qualidade de previs?o em rela??o ao modelo de Suaviza??o Exponencial e um valor satisfat?rio para a estat?stica U de Theil. 
+
+
+
+**Bibliografia:**
+
+Libraries utilizadas:
+astsa
+CADFtest
+forecast
+ggplot2
+quantmod
+tseries
+TTR
+urca
+xts
+DescTools 
